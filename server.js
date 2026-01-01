@@ -91,6 +91,24 @@ class DeepSeekProvider {
     }
 }
 
+class GroqProvider {
+    constructor(config) { this.config = config; }
+    async chat(contents) {
+        const messages = contents.map(c => ({ role: c.role === 'model' ? 'assistant' : c.role, content: c.parts.map(p => p.text || '').join('') }));
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
+            body: JSON.stringify({ model: this.config.model || 'llama-3.3-70b-versatile', messages, temperature: 0.9, max_tokens: 2048 })
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            console.error('Groq API error:', errorData);
+            throw new Error('Groq API error: ' + response.status);
+        }
+        return (await response.json()).choices[0].message.content;
+    }
+}
+
 class ClaudeProvider {
     constructor(config) { this.config = config; }
     async chat(contents) {
@@ -110,7 +128,7 @@ class ClaudeProvider {
 }
 
 function createProvider(name, config) {
-    const providers = { gemini: GeminiProvider, openai: OpenAIProvider, chatgpt: OpenAIProvider, deepseek: DeepSeekProvider, claude: ClaudeProvider, anthropic: ClaudeProvider };
+    const providers = { gemini: GeminiProvider, openai: OpenAIProvider, chatgpt: OpenAIProvider, deepseek: DeepSeekProvider, groq: GroqProvider, claude: ClaudeProvider, anthropic: ClaudeProvider };
     return new (providers[name.toLowerCase()] || GeminiProvider)(config);
 }
 
@@ -230,6 +248,7 @@ db.serialize(() => {
     [{ name: 'gemini', display_name: 'Google Gemini', default_model: 'gemini-2.5-flash', available_models: 'gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-pro,gemini-1.5-flash' },
      { name: 'openai', display_name: 'OpenAI ChatGPT', default_model: 'gpt-4o-mini', available_models: 'gpt-4o,gpt-4o-mini,gpt-3.5-turbo' },
      { name: 'deepseek', display_name: 'DeepSeek', default_model: 'deepseek-chat', available_models: 'deepseek-chat,deepseek-coder' },
+     { name: 'groq', display_name: 'Groq (Fast & Free)', default_model: 'llama-3.3-70b-versatile', available_models: 'llama-3.3-70b-versatile,llama-3.1-8b-instant,mixtral-8x7b-32768,gemma2-9b-it' },
      { name: 'claude', display_name: 'Anthropic Claude', default_model: 'claude-3-haiku-20240307', available_models: 'claude-3-opus-20240229,claude-3-sonnet-20240229,claude-3-haiku-20240307' }
     ].forEach(p => {
         db.get('SELECT * FROM api_providers WHERE name = ?', [p.name], (err, row) => {
