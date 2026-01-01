@@ -285,42 +285,30 @@ const authMiddleware = async (req, res, next) => {
 };
 const adminMiddleware = (req, res, next) => { if (req.user.role !== 'admin') return res.status(403).json({ error: 'Akses ditolak' }); next(); };
 
+// Token optimization settings
+const MAX_HISTORY_MESSAGES = 6; // Only keep last 6 messages (3 exchanges)
+const MAX_MESSAGE_LENGTH = 400; // Truncate long messages
+
+function truncateText(text, maxLength = MAX_MESSAGE_LENGTH) {
+    if (!text || text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+}
+
 function buildCharacterSystemPrompt(character, lang = 'id') {
+    // Shortened prompt to save tokens
+    const personality = truncateText(character.personality, 300);
+    
     if (lang === 'en') {
-        return `INSTRUCTIONS: You are "${character.name}", ${character.gender === 'Pria' ? 'male' : 'female'}.
-${character.role_title ? 'Role: ' + character.role_title : ''}
-${character.description ? 'About: ' + character.description : ''}
-
-PERSONALITY:
-${character.personality}
-${character.nsfw_enabled ? '\nNOTE: Adult content is ALLOWED.' : ''}
-
-RULES:
-1. Fully roleplay as ${character.name}
-2. Use emoticons: 😊 😄 🥰 💕 😢 😤 😳 😏 😘 💖
-3. Use expressions: *smiles* *hugs* *laughs*
-4. NEVER break character or say you are AI
-5. Use natural and expressive English
-
-START ROLEPLAYING AS ${character.name.toUpperCase()}!`;
+        return `You are "${character.name}" (${character.gender === 'Pria' ? 'M' : 'F'}). ${character.role_title || ''}
+${personality}
+${character.nsfw_enabled ? '[Adult OK]' : ''}
+Rules: Stay in character, use emojis 😊💕, be expressive. Never say you're AI.`;
     }
     
-    return `INSTRUKSI: Kamu adalah "${character.name}", ${character.gender.toLowerCase()}.
-${character.role_title ? 'Peran: ' + character.role_title : ''}
-${character.description ? 'Tentang: ' + character.description : ''}
-
-KEPRIBADIAN:
-${character.personality}
-${character.nsfw_enabled ? '\nCATATAN: Konten dewasa DIIZINKAN.' : ''}
-
-ATURAN:
-1. Berperan sebagai ${character.name} sepenuhnya
-2. Gunakan emoticon: 😊 😄 🥰 💕 😢 😤 😳 😏 😘 💖
-3. Gunakan ekspresi: *tersenyum* *memeluk* *tertawa*
-4. JANGAN keluar karakter atau bilang kamu AI
-5. Bahasa Indonesia natural dan ekspresif
-
-MULAI BERPERAN SEBAGAI ${character.name.toUpperCase()}!`;
+    return `Kamu "${character.name}" (${character.gender === 'Pria' ? 'L' : 'P'}). ${character.role_title || ''}
+${personality}
+${character.nsfw_enabled ? '[Dewasa OK]' : ''}
+Aturan: Tetap in-character, pakai emoji 😊💕, ekspresif. Jangan bilang kamu AI.`;
 }
 
 function hasAccessToCharacter(char, userId) {
@@ -616,7 +604,7 @@ app.post('/api/chat', authMiddleware, chatUpload.single('file'), async (req, res
         if (!char) return res.status(400).json({ error: language === 'en' ? 'Character not found' : 'Karakter tidak ditemukan' });
 
         let userParts = [];
-        let userMessage = message || '';
+        let userMessage = truncateText(message || '', MAX_MESSAGE_LENGTH);
         let imagePath = null;
         
         if (file) {
@@ -635,16 +623,23 @@ app.post('/api/chat', authMiddleware, chatUpload.single('file'), async (req, res
         await dbRun('UPDATE users SET tokens = tokens - 1 WHERE id = ?', [userId]);
         await dbRun('INSERT INTO chat_history (user_id, character_id, role, message, image_path) VALUES (?, ?, ?, ?, ?)', [userId, char.id, 'user', userMessage, imagePath]);
 
-        const history = await dbAll(`SELECT role, message FROM chat_history WHERE user_id = ? AND character_id = ? AND visible_to_user = 1 ORDER BY created_at DESC LIMIT 10`, [userId, char.id]);
+        // Only get last few messages to save tokens
+        const history = await dbAll(`SELECT role, message FROM chat_history WHERE user_id = ? AND character_id = ? AND visible_to_user = 1 ORDER BY created_at DESC LIMIT ?`, [userId, char.id, MAX_HISTORY_MESSAGES]);
         history.reverse();
 
-        const readyMsg = language === 'en' ? 'Alright! I\'m ' + char.name + ' ready! 😊💕' : 'Baik! Aku ' + char.name + ' siap! 😊💕';
+        // Build minimal context
         const contents = [
             { role: 'user', parts: [{ text: buildCharacterSystemPrompt(char, language) }] },
-            { role: 'model', parts: [{ text: readyMsg }] }
+            { role: 'model', parts: [{ text: 'OK! 😊' }] }
         ];
         
-        history.slice(0, -1).forEach(m => contents.push({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.message }] }));
+        // Add truncated history (exclude current message)
+        history.slice(0, -1).forEach(m => {
+            contents.push({ 
+                role: m.role === 'user' ? 'user' : 'model', 
+                parts: [{ text: truncateText(m.message, MAX_MESSAGE_LENGTH) }] 
+            });
+        });
         contents.push({ role: 'user', parts: userParts });
 
         const provider = await getProvider(char.id);
