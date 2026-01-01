@@ -1,0 +1,2 @@
+# kazuchar-ai
+ai charakter
